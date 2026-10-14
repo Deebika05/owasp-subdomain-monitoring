@@ -1,0 +1,320 @@
+{
+  "name": "NGP-003 OWASP Subdomain Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 3
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -64,
+        144
+      ],
+      "id": "4bb6e74a-abde-46bf-84a6-faeb6900232c",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://api.ctlogs.dev/v1/hosts/owasp.org",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        160,
+        128
+      ],
+      "id": "738f8a80-4fbb-413a-923d-540d4f055105",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\n\n// Get host records returned by the API\nconst hosts = response.hosts || [];\n\n// Remove wildcard entries, normalize case, and deduplicate\nconst uniqueHosts = [\n  ...new Set(\n    hosts\n      .map(item => (item.host || '').trim().toLowerCase())\n      .filter(host =>\n        host &&\n        !host.startsWith('*.') &&\n        host !== 'owasp.org' &&\n        host.endsWith('.owasp.org')\n      )\n  )\n];\n\n// Return one n8n item per hostname\nreturn uniqueHosts.map(host => ({\n  json: {\n    hostname: host\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        144
+      ],
+      "id": "b1dbc13f-4a82-4424-a78a-f579db51bf89",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify the hostname provided below. Do not ask the user for more information.\n\nHostname to classify:\n{{ $json.hostname }}\n\nChoose exactly one tag: admin, dev, staging, api, other.\n\nAssign a priority:\n1 = Low review priority\n2 = Worth reviewing\n3 = Moderate review priority\n4 = High review priority\n5 = Highest review priority\n\nUse only the hostname as evidence. Do not claim a vulnerability based on the hostname alone.\n\nReturn only one valid JSON object, without Markdown or additional text, using this exact structure:\n{\n  \"hostname\": \"{{ $json.hostname }}\",\n  \"tag\": \"other\",\n  \"priority\": 2,\n  \"reason\": \"Brief explanation based on the hostname.\"\n}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        608,
+        208
+      ],
+      "id": "4c60973e-1878-4521-bfbc-b842034f8a93",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {
+          "promptCacheKey": ""
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        448,
+        352
+      ],
+      "id": "96de5f26-4551-4b46-817d-f189b20c5623",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst raw = $json.output;\n\nconst cleaned = raw\n  .replace(/```json\\s*/i, '')\n  .replace(/```\\s*/g, '')\n  .trim();\n\nconst result = JSON.parse(cleaned);\n\nreturn {\n  json: result\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        144
+      ],
+      "id": "507b32d6-1d84-43b9-b3d1-f07babac578e",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "76942413-bd26-4db5-bd7e-f623eeaf6486",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "leftValue": "={{ Number($json.priority) }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        1152,
+        144
+      ],
+      "id": "642a2152-6933-4e71-9abd-f31b360f67c6",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst items = $input.all();\nconst groups = {};\n\nfor (const item of items) {\n  const { hostname, tag, priority, reason } = item.json;\n\n  if (!groups[tag]) {\n    groups[tag] = [];\n  }\n\n  groups[tag].push({\n    hostname,\n    priority,\n    reason,\n  });\n}\n\nlet report = 'OWASP Subdomain Monitoring Report\\n\\n';\n\nfor (const tag of Object.keys(groups).sort()) {\n  report += `## ${tag.toUpperCase()}\\n`;\n\n  for (const host of groups[tag]) {\n    report += `- ${host.hostname} | Priority: ${host.priority} | ${host.reason}\\n`;\n  }\n\n  report += '\\n';\n}\n\nreturn [{\n  json: {\n    report,\n    totalHostnames: items.length,\n    groups,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        128
+      ],
+      "id": "abc2ee29-8637-49bc-85db-1f1abf5d71b8",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "folderId": "10OP5M9gi2xKjDjzjFAU0td6bkvHzD96n",
+        "title": "OWASP Subdomain Monitoring Report"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        128
+      ],
+      "id": "7ccbc4f9-45e4-4ead-aeb0-90a2c21cb230",
+      "name": "Create a document",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "ca3Ds7nQacayNnMI",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "1Q4es0F0WaUlujJ0wgwtmvFgTIA-cdLXa5h0hQI0SMMM",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $('Code in JavaScript2').first().json.report }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        128
+      ],
+      "id": "d5e24738-5e2c-470d-b8d3-8eecc448411e",
+      "name": "Update a document",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "ca3Ds7nQacayNnMI",
+          "name": "Google Docs account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Create a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a document": {
+      "main": [
+        [
+          {
+            "node": "Update a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "9f1b40ea-23e0-475a-8459-12c89acfec94",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1b90ec1ef510c014c399b8048cd956e82f34f2a7a038be7347b1d6ce066d1ab5"
+  },
+  "nodeGroups": [],
+  "id": "sUfqhnSdeapb16Jg",
+  "tags": []
+}
